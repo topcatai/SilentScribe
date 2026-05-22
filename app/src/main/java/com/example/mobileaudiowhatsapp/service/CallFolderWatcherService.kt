@@ -342,10 +342,10 @@ class CallFolderWatcherService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "Call Transcriber Service",
+                "SilentScribe Service",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Monitors call folder and transcribes recordings offline"
+                description = "Monitors call folder and transcribes recordings offline under SilentScribe"
             }
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             nm.createNotificationChannel(channel)
@@ -362,7 +362,7 @@ class CallFolderWatcherService : Service() {
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Call Folder Watcher")
+            .setContentTitle("SilentScribe Watcher")
             .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_menu_save)
             .setContentIntent(pendingIntent)

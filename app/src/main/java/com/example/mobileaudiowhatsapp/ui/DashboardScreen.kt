@@ -186,7 +186,7 @@ fun DashboardScreen(navController: NavHostController) {
             TopAppBar(
                 title = {
                     Text(
-                        text = "Vosk Call Transcriber",
+                        text = "SilentScribe",
                         fontWeight = FontWeight.Bold,
                         color = Color.White,
                         fontFamily = FontFamily.SansSerif
