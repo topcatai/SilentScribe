@@ -97,7 +97,11 @@ import com.example.mobileaudiowhatsapp.History
 import com.example.mobileaudiowhatsapp.Settings as SettingsRoute
 import com.example.mobileaudiowhatsapp.data.AppDatabase
 import com.example.mobileaudiowhatsapp.service.CallFolderWatcherService
+import androidx.core.content.FileProvider
+import androidx.compose.material.icons.filled.Share
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 
 // Sleek dark palette design system
 val SlateDarkBg = Color(0xFF0A0D18)
@@ -193,6 +197,11 @@ fun DashboardScreen(navController: NavHostController) {
                     )
                 },
                 actions = {
+                    if (setupCompleted) {
+                        IconButton(onClick = { shareDatabase(context) }) {
+                            Icon(Icons.Default.Share, contentDescription = "Export Database", tint = Color.White)
+                        }
+                    }
                     IconButton(onClick = {
                         checkPermissions()
                         updateServiceStatus()
@@ -871,6 +880,56 @@ fun DashboardContent(
             )
         }
     }
+
+    Spacer(modifier = Modifier.height(16.dp))
+
+    // Share database card
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { shareDatabase(context) }
+            .border(1.dp, GlassBorderColor.copy(alpha = 0.8f), RoundedCornerShape(16.dp)),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF161A2E)),
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(20.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .background(AccentViolet.copy(alpha = 0.1f), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Share,
+                    contentDescription = null,
+                    tint = AccentViolet,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(16.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Export Database (.db)",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+                Text(
+                    text = "Share SQLite database to WhatsApp, Telegram, or Email.",
+                    fontSize = 12.sp,
+                    color = Color.Gray
+                )
+            }
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                contentDescription = null,
+                tint = Color.LightGray
+            )
+        }
+    }
 }
 
 @Composable
@@ -906,5 +965,51 @@ fun StatCard(
                 color = accentColor
             )
         }
+    }
+}
+
+fun shareDatabase(context: Context) {
+    try {
+        val dbFile = context.getDatabasePath("call_transcriptions.db")
+        if (!dbFile.exists()) {
+            Toast.makeText(context, "Database does not exist yet", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // Force a checkpoint of the database to make sure the WAL file is fully flushed into the main .db file
+        try {
+            val db = AppDatabase.getInstance(context)
+            db.openHelper.writableDatabase.query("PRAGMA wal_checkpoint(FULL)")
+        } catch (e: Exception) {
+            android.util.Log.e("SilentScribe", "Failed to force WAL checkpoint", e)
+        }
+
+        // Copy database to a temporary file in the cache directory to prevent file locking/sharing issues
+        val cacheFile = File(context.cacheDir, "SilentScribe_Database.db")
+        FileInputStream(dbFile).use { input ->
+            FileOutputStream(cacheFile).use { output ->
+                input.copyTo(output)
+            }
+        }
+
+        // Share the copy using FileProvider
+        val uri = FileProvider.getUriForFile(
+            context,
+            "com.example.mobileaudiowhatsapp.fileprovider",
+            cacheFile
+        )
+
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "application/x-sqlite3"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+
+        val chooser = Intent.createChooser(intent, "Export Transcripts Database")
+        chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(chooser)
+    } catch (e: Exception) {
+        Toast.makeText(context, "Export failed: ${e.message}", Toast.LENGTH_LONG).show()
+        android.util.Log.e("SilentScribe", "Failed to share database", e)
     }
 }
