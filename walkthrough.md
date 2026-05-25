@@ -1,77 +1,63 @@
-# Walkthrough: Local Call Transcription & Summarization App
+# Walkthrough: Whisper ASR & local LLM Integration (v1.1.0)
 
-This walkthrough summarizes the implementation details, verification steps, and results achieved in executing the local call transcription and summarization app blueprint.
+This walkthrough documents the major upgrade from Vosk to **Whisper (via Sherpa-ONNX)** and the addition of a **local Large Language Model (via MediaPipe Tasks GenAI)**, as well as the database schema migration to version 2 and the publication of release `v1.1.0`.
 
-## Changes Made
+## 🛠️ Changes Made
 
-1. **Gradle Build Configuration**:
-   - Upgraded compile and target SDK to version 35/36.
-   - Integrated dependency version catalog targeting Room `2.8.4` (using KSP compiler), Vosk Android `0.3.47` for offline ASR, and Jetpack Navigation `2.8.5` (stable).
-   - Removed SFTP backup libraries and database encryption constraints to meet Phase 1 requirements.
+1. **Speech-to-Text Upgrade (Whisper)**:
+   - Swapped **Vosk ASR** out for **OpenAI's Whisper** (via `sherpa-onnx-1.13.2.aar` local dependency).
+   - Set up `OfflineRecognizer` with CPU provider and auto-language detection supporting multilingual and Hinglish audio decoding.
+   - Retained the optimized native audio decoding pipeline (MediaCodec/MediaExtractor downmixing stereo to mono and resampling to 16kHz PCM WAV) but streamlined the try-finally cleanup blocks to immediately delete temporary WAV files.
 
-2. **Android Manifest & Permissions**:
-   - Configured `MANAGE_EXTERNAL_STORAGE` permission for raw file system access on MIUI.
-   - Configured Foreground Service with `dataSync` type for background processing.
-   - Configured Boot completed receiver for automatic watcher recovery.
-   - Added network security configuration (`network_security_config.xml`) that disables all cleartext traffic to guarantee complete offline data isolation.
-   - Excluded Room DB files from device and cloud backups via XML resource configs.
-   - Hardened security by explicitly removing the `INTERNET` permission (`tools:node="remove"`) from the manifest to prevent network transmission.
+2. **Local LLM Summarization**:
+   - Integrated **MediaPipe Tasks GenAI SDK** (`tasks-genai:0.10.35`) to run on-device Small Language Models (e.g., Llama 3.2 1B or Gemma 2B).
+   - Upgraded summarization from rule-based keyword searches to intelligent on-device generative LLM inference, extracting structured sentiment, call highlights, and action items.
+   - Added a safe fallback to a rule-based parser in case the model is not loaded, is missing, or the device runs out of memory.
 
-3. **Data Layer**:
-   - Created the [CallLog](file:///c:/aiproject/Goose/Mobile_Audio_Whatsapp/data/CallLog.kt) entity supporting status states: `PENDING`, `PROCESSING`, `COMPLETED`, `SKIPPED_TOO_SHORT`.
-   - Coded the Room [CallLogDao](file:///c:/aiproject/Goose/Mobile_Audio_Whatsapp/data/CallLogDao.kt) to handle full log query and partial phone number searches.
-   - Implemented [FilenameParser](file:///c:/aiproject/Goose/Mobile_Audio_Whatsapp/app/src/main/java/com/example/mobileaudiowhatsapp/util/FilenameParser.kt) supporting MIUI primary filename formats and fallback rules (name prefixes and raw number values).
+3. **Database Schema Migration (v1 ➔ v2)**:
+   - Incremented database version to `2`.
+   - Wrote a safe Room migration `MIGRATION_1_2` to add the `failure_reason` text column to the `call_logs` table without losing existing call records.
+   - Verified that the migration preserves all 63 completed database transcripts.
 
-4. **Background Service & Engine**:
-   - Created [CallFolderWatcherService](file:///c:/aiproject/Goose/Mobile_Audio_Whatsapp/app/src/main/java/com/example/mobileaudiowhatsapp/service/CallFolderWatcherService.kt) to monitor the target directory with a non-deprecated `FileObserver` constructor.
-   - Integrated screen ON/OFF receiver: background queues suspend immediately on screen unlock and resume processing on screen lock to save device resources.
-   - Added an automatic 2-second file-size stability debounce step before transcription start.
-   - Fully implemented the [SpeechToTextManager](file:///c:/aiproject/Goose/Mobile_Audio_Whatsapp/app/src/main/java/com/example/mobileaudiowhatsapp/ml/SpeechToTextManager.kt) decoder using a native `MediaCodec` and `MediaExtractor` pipeline supporting mono downmixing, 16kHz resampling, and producing Vosk-compatible WAV file output.
-   - Implemented a Try-Finally cleanup block in [SpeechToTextManager](file:///c:/aiproject/Goose/Mobile_Audio_Whatsapp/app/src/main/java/com/example/mobileaudiowhatsapp/ml/SpeechToTextManager.kt) to delete temporary decoded WAV files immediately after processing.
-   - Implemented an orphaned temp WAV file purge utility in [MainActivity](file:///c:/aiproject/Goose/Mobile_Audio_Whatsapp/app/src/main/java/com/example/mobileaudiowhatsapp/MainActivity.kt) on application launch to clean up from any previous ungraceful shutdowns.
-   - Created [SummarisationManager](file:///c:/aiproject/Goose/Mobile_Audio_Whatsapp/app/src/main/java/com/example/mobileaudiowhatsapp/ml/SummarisationManager.kt) to extract sentiment, key highlights, and action items using a rule-based parsing engine.
+4. **Background Service Optimizations**:
+   - Updated `CallFolderWatcherService` to run a boot scan. Existing files found during boot are registered with the status `SKIPPED_HISTORICAL` (`isNew = 0`) to prevent overwhelming the device's CPU. Only new incoming calls arriving during active runtime are transcribed.
+   - Added stacktrace capture to `failure_reason` in SQLite to simplify debugging background processing failures.
+   - Kept the screen-lock resource optimizer: transcription and LLM inference suspend when the screen is active and resume when the screen is locked to save system resources.
 
-5. **UI & Navigation Layer**:
-   - Implemented type-safe navigation routes using Kotlin Serialization: `Dashboard`, `History`, `CallDetails(id)`, and `Settings`.
-   - Developed `DashboardScreen` containing the setup wizard (All Files Access, battery optimization white-listing, MIUI autostart guide, folder selector) and live counters.
-   - Created `HistoryScreen` displaying grouped lists of phone numbers and names under date headers, including a real-time partial phone number search box.
-   - Developed `CallDetailsScreen` showing dual tabs (Exact Transcript | Summary) and clipboard sharing.
-   - Built a custom `SettingsScreen` to alter watch folders and specify custom Vosk model folders.
+5. **UI & Configuration Improvements**:
+   - Display a `"Historical — not transcribed"` label on the `HistoryScreen` list items for any file skipped during startup.
+   - Upgraded `SettingsScreen` to add parameters for the local LLM model file path and translation toggles.
+   - Included translation model checks to display warning notices if Translate mode is selected but the loaded folder points to a `tiny-en` (English-only) model.
 
 ---
 
-## What Was Tested & Validation Results
+## 🔬 Verification & Validation Results
 
 ### 1. Build Verification
-We verified the complete compilation and code correctness via Gradle tasks:
-- **Clean Compile & Assemble**: Executed `./gradlew assembleDebug` successfully.
-- **Android Lint checks**: Executed `./gradlew lintDebug` successfully with 0 errors and non-critical warnings.
-
-### 2. Automated Unit Tests
-Created and ran unit tests under `app/src/test/java/com/example/mobileaudiowhatsapp/ui/main/`:
-- **[FilenameParserTest](file:///c:/aiproject/Goose/Mobile_Audio_Whatsapp/app/src/test/java/com/example/mobileaudiowhatsapp/ui/main/MainScreenViewModelTest.kt)**: Verified primary format mapping (`0091-6361265991(...)_...mp3`), prefix extraction (`Papa_...mp3`), number-only extraction (`+91...mp3`), and normalization (e.g. dropping 91 prefixes to domestic 10 digits).
-- **[SummarisationManagerTest](file:///c:/aiproject/Goose/Mobile_Audio_Whatsapp/app/src/test/java/com/example/mobileaudiowhatsapp/ui/main/SummarisationManagerTest.kt)**: Validated rule-based keypoint extraction, sentiment classifier (Positive, Negative, Neutral), action-item triggers, and call duration formatting.
-
-Command execution output:
-```bash
-> Task :app:testDebugUnitTest
-> Task :app:test
-BUILD SUCCESSFUL in 28s
+We compiled the release version of the application successfully:
+```powershell
+.\gradlew assembleRelease
 ```
-All unit tests passed.
+- **Result**: `BUILD SUCCESSFUL` in 1m 42s.
+- **APK Output**: `app-release-unsigned.apk` (~61.96 MB, well within the 80 MB constraint).
+
+### 2. Database Migration Check
+Verified schema updates via Python SQLite tool:
+- **`user_version`**: `2`
+- **`call_logs` Count**: All 63 completed transcripts survived migration.
+- **`failure_reason` Column**: Successfully appended as `TEXT` type.
+
+### 3. Automated Unit Tests
+Executed all tests successfully:
+```powershell
+.\gradlew test
+```
+All unit tests for filename parsing and summarization parsing passed.
 
 ---
 
-## Device & File Context
-
-The app is built and verified to support MIUI/Xiaomi HyperOS call storage formats.
-
-### Target Platform Context
-The app targets Xiaomi HyperOS (Android API 33+):
-
-![Xiaomi HyperOS Target Device](images/media__1779428581522.png)
-
-### Call Recorder Files Layout
-The filename formats parsed and supported by the app correspond directly to MIUI call recorder directory structure:
-
-![MIUI Call Recorder Files Directory](images/media__1779432161359.png)
+## 📦 Release Publication (v1.1.0)
+Due to the major architectural changes and database migrations, the version was bumped to `v1.1.0` (versionCode `2`). 
+- **Release Page**: Created on GitHub under tag `v1.1.0`.
+- **Artifact Upload**: Uploaded `app-release-unsigned.apk` (61.96 MB) to the `v1.1.0` release asset stream.
+- **Cleanup**: The incorrect release and tag `v1.0.1` containing the Whisper build were fully deleted from GitHub.
