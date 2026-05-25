@@ -188,7 +188,7 @@ fun CallLogItem(log: CallLog, onClick: () -> Unit) {
         "COMPLETED" -> ActiveGreen
         "PENDING" -> PausedOrange
         "PROCESSING" -> AccentTeal
-        "SKIPPED_TOO_SHORT" -> Color.Gray
+        "SKIPPED_TOO_SHORT", "SKIPPED_HISTORICAL" -> Color.Gray
         else -> StoppedRed
     }
 
@@ -237,8 +237,9 @@ fun CallLogItem(log: CallLog, onClick: () -> Unit) {
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    val hasDisplayName = !log.displayName.isNullOrBlank()
                     Text(
-                        text = log.displayName ?: log.phoneNumber,
+                        text = if (hasDisplayName) log.displayName!! else log.phoneNumber,
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color.White
@@ -250,7 +251,7 @@ fun CallLogItem(log: CallLog, onClick: () -> Unit) {
                     )
                 }
 
-                if (log.displayName != null) {
+                if (!log.displayName.isNullOrBlank()) {
                     Text(
                         text = log.phoneNumber,
                         fontSize = 12.sp,
@@ -275,9 +276,13 @@ fun CallLogItem(log: CallLog, onClick: () -> Unit) {
                                 .size(6.dp)
                                 .background(statusColor, CircleShape)
                         )
+                        val statusText = when (log.status) {
+                            "SKIPPED_HISTORICAL" -> "Historical — not transcribed"
+                            else -> log.status.replace("_", " ").lowercase()
+                                .replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
+                        }
                         Text(
-                            text = log.status.replace("_", " ").lowercase()
-                                .replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() },
+                            text = statusText,
                             color = statusColor,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.SemiBold

@@ -1,13 +1,137 @@
 package com.example.mobileaudiowhatsapp.ml
 
-object SummarisationManager {
+import android.content.Context
+import android.util.Log
+import com.google.mediapipe.tasks.genai.llminference.LlmInference
+import java.io.File
 
-    fun summarise(transcript: String, phoneNumber: String, durationSeconds: Int): String {
+object SummarisationManager {
+    private const val TAG = "SummarisationManager"
+
+    @Volatile
+    private var llmInference: LlmInference? = null
+    private var loadedModelPath: String? = null
+
+    @Synchronized
+    private fun getLlmInference(context: Context): LlmInference? {
+        val prefs = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+        val modelPath = prefs.getString("llm_model_path", "")
+        if (modelPath.isNullOrBlank()) {
+            Log.d(TAG, "No LLM model path configured.")
+            release()
+            return null
+        }
+
+        if (loadedModelPath == modelPath && llmInference != null) {
+            return llmInference
+        }
+
+        // Release old instance if model path changed
+        release()
+
+        val modelFile = File(modelPath)
+        if (!modelFile.exists() || !modelFile.isFile) {
+            Log.w(TAG, "LLM model file does not exist: $modelPath")
+            return null
+        }
+
+        try {
+            Log.d(TAG, "Initializing MediaPipe LlmInference with model: $modelPath")
+            val options = LlmInference.LlmInferenceOptions.builder()
+                .setModelPath(modelPath)
+                .setMaxTokens(512)
+                .setPreferredBackend(LlmInference.Backend.GPU) // Try GPU first
+                .build()
+            llmInference = LlmInference.createFromOptions(context, options)
+            loadedModelPath = modelPath
+            Log.d(TAG, "LlmInference initialized successfully.")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to initialize GPU-based LlmInference, falling back to CPU", e)
+            try {
+                val options = LlmInference.LlmInferenceOptions.builder()
+                    .setModelPath(modelPath)
+                    .setMaxTokens(512)
+                    .setPreferredBackend(LlmInference.Backend.CPU) // CPU fallback
+                    .build()
+                llmInference = LlmInference.createFromOptions(context, options)
+                loadedModelPath = modelPath
+                Log.d(TAG, "LlmInference (CPU) initialized successfully.")
+            } catch (e2: Exception) {
+                Log.e(TAG, "Failed to initialize CPU-based LlmInference", e2)
+                release()
+            }
+        }
+
+        return llmInference
+    }
+
+    @Synchronized
+    fun release() {
+        try {
+            llmInference?.close()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error closing LlmInference", e)
+        }
+        llmInference = null
+        loadedModelPath = null
+    }
+
+    fun summarise(transcript: String, phoneNumber: String, durationSeconds: Int, context: Context? = null): String {
         val wordCount = if (transcript.isBlank()) 0 else transcript.trim().split(Regex("\\s+")).size
+        val duration = formatDuration(durationSeconds)
+
+        val llm = if (context != null) getLlmInference(context) else null
+        if (llm != null && transcript.isNotBlank()) {
+            try {
+                val prompt = """
+                    You are a professional call assistant analyzing a call transcript.
+                    Transcript:
+                    "$transcript"
+                    
+                    Provide a concise summary, main key points, and clear action items from this call.
+                    Structure your response EXACTLY like this:
+                    Summary: <a brief 1-2 sentence overview of the call>
+                    
+                    Key Points:
+                    - <point 1>
+                    - <point 2>
+                    
+                    Action Items:
+                    - <action item 1>
+                    - <action item 2>
+                """.trimIndent()
+
+                Log.d(TAG, "Running LLM inference...")
+                val response = llm.generateResponse(prompt).trim()
+                Log.d(TAG, "LLM response received.")
+
+                if (response.isNotBlank()) {
+                    return buildString {
+                        appendLine("📞 Call with $phoneNumber — $duration")
+                        appendLine("📊 AI Generated Summary  |  ~$wordCount words transcribed")
+                        appendLine()
+                        append(response)
+                    }.trim()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Inference failed, falling back to rule-based summarizer", e)
+            }
+        }
+
+        // Rule-based fallback if LLM is not configured, fails to initialize, or crashes
+        return runRuleBasedSummary(transcript, phoneNumber, durationSeconds, wordCount, duration)
+    }
+
+    private fun runRuleBasedSummary(
+        transcript: String,
+        phoneNumber: String,
+        durationSeconds: Int,
+        wordCount: Int,
+        duration: String
+    ): String {
         val keyPoints = extractKeyPoints(transcript)
         val sentiment = detectSentiment(transcript)
         val actionItems = extractActionItems(transcript)
-        val duration = formatDuration(durationSeconds)
 
         return buildString {
             appendLine("📞 Call with $phoneNumber — $duration")

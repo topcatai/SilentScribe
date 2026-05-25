@@ -41,6 +41,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -82,9 +83,12 @@ fun SettingsScreen(navController: NavHostController) {
     
     var watchDirPath by remember { mutableStateOf(prefs.getString("watch_dir", "") ?: "") }
     var customModelPath by remember { mutableStateOf(prefs.getString("custom_model_path", "") ?: "") }
+    var llmModelPath by remember { mutableStateOf(prefs.getString("llm_model_path", "") ?: "") }
+    var translateMode by remember { mutableStateOf(prefs.getBoolean("translate_mode", false)) }
 
     var watchDirError by remember { mutableStateOf("") }
     var customModelError by remember { mutableStateOf("") }
+    var llmModelError by remember { mutableStateOf("") }
 
     var showWipeConfirmDialog by remember { mutableStateOf(false) }
 
@@ -219,13 +223,13 @@ fun SettingsScreen(navController: NavHostController) {
                 ) {
                     Column(modifier = Modifier.padding(20.dp)) {
                         Text(
-                            text = "Custom ASR Model Folder (Optional)",
+                            text = "ASR Whisper Model Folder (Required)",
                             fontSize = 16.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color.White
                         )
                         Text(
-                            text = "Override the default small model by specifying an absolute path to a larger unzipped Vosk model directory on your storage.",
+                            text = "Specify the absolute path to the directory containing your unzipped Sherpa-ONNX Whisper model files (encoder, decoder, and tokens).",
                             fontSize = 12.sp,
                             color = Color.Gray,
                             modifier = Modifier.padding(top = 2.dp, bottom = 12.dp)
@@ -237,7 +241,7 @@ fun SettingsScreen(navController: NavHostController) {
                                 customModelPath = it
                                 customModelError = ""
                             },
-                            label = { Text("Model Directory Absolute Path", color = Color.Gray) },
+                            label = { Text("ASR Model Directory Absolute Path", color = Color.Gray) },
                             singleLine = true,
                             isError = customModelError.isNotEmpty(),
                             colors = OutlinedTextFieldDefaults.colors(
@@ -261,7 +265,56 @@ fun SettingsScreen(navController: NavHostController) {
                             )
                         }
 
-                        Spacer(modifier = Modifier.height(12.dp))
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        // Translation Mode Section
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Translation Mode (Translate to English)",
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                                Text(
+                                    text = "Translates Hinglish or Indic speech directly to English transcript. Requires a multilingual Whisper model.",
+                                    fontSize = 11.sp,
+                                    color = Color.Gray
+                                )
+                            }
+                            Switch(
+                                checked = translateMode,
+                                onCheckedChange = {
+                                    translateMode = it
+                                    prefs.edit().putBoolean("translate_mode", it).apply()
+                                }
+                            )
+                        }
+
+                        // Warn if Translate Mode is on but the model is English-only
+                        val isEnglishOnlyModel = remember(customModelPath) {
+                            val path = customModelPath.lowercase()
+                            path.contains("tiny.en") || path.contains("tiny-en") ||
+                            path.contains("base.en") || path.contains("base-en") ||
+                            path.contains("small.en") || path.contains("small-en") ||
+                            path.contains("medium.en") || path.contains("medium-en")
+                        }
+
+                        if (translateMode && isEnglishOnlyModel) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "⚠️ Warning: Translation Mode is enabled, but the ASR model seems to be English-only (.en). Translation requires a multilingual Whisper model.",
+                                color = PausedOrange,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
 
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -273,11 +326,11 @@ fun SettingsScreen(navController: NavHostController) {
                                         customModelPath = ""
                                         customModelError = ""
                                         prefs.edit().remove("custom_model_path").apply()
-                                        Toast.makeText(context, "Reverted to default bundled model", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, "Cleared ASR model path", Toast.LENGTH_SHORT).show()
                                     },
                                     colors = ButtonDefaults.textButtonColors(contentColor = StoppedRed)
                                 ) {
-                                    Text("Reset Default", fontWeight = FontWeight.Bold)
+                                    Text("Clear Path", fontWeight = FontWeight.Bold)
                                 }
                                 Spacer(modifier = Modifier.width(8.dp))
                             }
@@ -292,13 +345,13 @@ fun SettingsScreen(navController: NavHostController) {
 
                                     val file = File(customModelPath.trim())
                                     if (!file.exists()) {
-                                        customModelError = "Model path does not exist"
+                                        customModelError = "ASR model folder does not exist"
                                     } else if (!file.isDirectory) {
-                                        customModelError = "Path is a file, must be a model folder"
+                                        customModelError = "Path is a file, must be a directory"
                                     } else {
                                         customModelError = ""
                                         prefs.edit().putString("custom_model_path", file.absolutePath).apply()
-                                        Toast.makeText(context, "Custom model configured", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, "ASR model folder configured", Toast.LENGTH_SHORT).show()
                                     }
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = AccentViolet),
@@ -307,6 +360,109 @@ fun SettingsScreen(navController: NavHostController) {
                                 Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.White)
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text("Save Model Folder", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+
+                // 2b. Local LLM Model Configuration Settings
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, GlassBorderColor, RoundedCornerShape(20.dp)),
+                    colors = CardDefaults.cardColors(containerColor = GlassCardColor),
+                    shape = RoundedCornerShape(20.dp)
+                ) {
+                    Column(modifier = Modifier.padding(20.dp)) {
+                        Text(
+                            text = "Local LLM Summarizer (Optional)",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Text(
+                            text = "Specify the absolute path to a MediaPipe-compatible Llama 3.2 1B or Gemma 2B model file (.bin or .task). If not set or initialization fails, a rule-based summarizer is used.",
+                            fontSize = 12.sp,
+                            color = Color.Gray,
+                            modifier = Modifier.padding(top = 2.dp, bottom = 12.dp)
+                        )
+
+                        OutlinedTextField(
+                            value = llmModelPath,
+                            onValueChange = {
+                                llmModelPath = it
+                                llmModelError = ""
+                            },
+                            label = { Text("LLM Model File Absolute Path", color = Color.Gray) },
+                            singleLine = true,
+                            isError = llmModelError.isNotEmpty(),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = AccentTeal,
+                                unfocusedBorderColor = GlassBorderColor,
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White,
+                                focusedContainerColor = Color(0xFF13172E),
+                                unfocusedContainerColor = Color(0xFF13172E)
+                            ),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        if (llmModelError.isNotEmpty()) {
+                            Text(
+                                text = llmModelError,
+                                color = Color.Red,
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(top = 4.dp, start = 4.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End
+                        ) {
+                            if (prefs.getString("llm_model_path", null) != null) {
+                                TextButton(
+                                    onClick = {
+                                        llmModelPath = ""
+                                        llmModelError = ""
+                                        prefs.edit().remove("llm_model_path").apply()
+                                        Toast.makeText(context, "Reverted to rule-based summary", Toast.LENGTH_SHORT).show()
+                                    },
+                                    colors = ButtonDefaults.textButtonColors(contentColor = StoppedRed)
+                                ) {
+                                    Text("Reset Default", fontWeight = FontWeight.Bold)
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                            }
+
+                            Button(
+                                onClick = {
+                                    if (llmModelPath.trim().isEmpty()) {
+                                        prefs.edit().remove("llm_model_path").apply()
+                                        Toast.makeText(context, "Reverted to rule-based summary", Toast.LENGTH_SHORT).show()
+                                        return@Button
+                                    }
+
+                                    val file = File(llmModelPath.trim())
+                                    if (!file.exists()) {
+                                        llmModelError = "LLM model file does not exist"
+                                    } else if (!file.isFile) {
+                                        llmModelError = "Path is a folder, must be a file (.bin / .task)"
+                                    } else {
+                                        llmModelError = ""
+                                        prefs.edit().putString("llm_model_path", file.absolutePath).apply()
+                                        Toast.makeText(context, "LLM model configured", Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = AccentViolet),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.White)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Save LLM File", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                             }
                         }
                     }

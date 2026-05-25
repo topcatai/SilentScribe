@@ -5,43 +5,103 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
+import com.k2fsa.sherpa.onnx.OfflineModelConfig
+import com.k2fsa.sherpa.onnx.OfflineRecognizer
+import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
+import com.k2fsa.sherpa.onnx.OfflineWhisperModelConfig
+import com.k2fsa.sherpa.onnx.WaveReader
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
-import org.vosk.Model
-import org.vosk.Recognizer
 import java.io.File
 import java.io.IOException
 
 class SpeechToTextManager(private val context: Context) {
 
+    data class WhisperModelFiles(
+        val encoder: File,
+        val decoder: File,
+        val tokens: File
+    )
+
+    private fun findWhisperModelFiles(dir: File): WhisperModelFiles {
+        if (!dir.exists() || !dir.isDirectory) {
+            throw IOException("Model directory does not exist or is not a directory: ${dir.absolutePath}")
+        }
+
+        var encoderFile: File? = null
+        var decoderFile: File? = null
+        var tokensFile: File? = null
+
+        fun walk(file: File) {
+            if (file.isDirectory) {
+                file.listFiles()?.forEach { walk(it) }
+            } else {
+                val name = file.name.lowercase()
+                if (name.contains("encoder") && (name.endsWith(".onnx") || name.endsWith(".ort"))) {
+                    encoderFile = file
+                } else if (name.contains("decoder") && (name.endsWith(".onnx") || name.endsWith(".ort"))) {
+                    decoderFile = file
+                } else if (name.contains("tokens") && name.endsWith(".txt")) {
+                    tokensFile = file
+                }
+            }
+        }
+
+        walk(dir)
+
+        if (encoderFile == null) throw IOException("Could not find encoder.onnx in ${dir.absolutePath}")
+        if (decoderFile == null) throw IOException("Could not find decoder.onnx in ${dir.absolutePath}")
+        if (tokensFile == null) throw IOException("Could not find tokens.txt in ${dir.absolutePath}")
+
+        return WhisperModelFiles(encoderFile!!, decoderFile!!, tokensFile!!)
+    }
+
     suspend fun transcribe(audioFile: File): String = withContext(Dispatchers.Default) {
-        val modelPath = VoskModelManager.customModelPath(context)
-            ?: VoskModelManager.ensureModel(context).absolutePath
-        val model = Model(modelPath)
-        val recognizer = Recognizer(model, 16000.0f)
+        val prefs = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+        val customPathStr = prefs.getString("custom_model_path", "")
+        if (customPathStr.isNullOrBlank()) {
+            throw IOException("Whisper model path is not configured in settings.")
+        }
+        val modelDir = File(customPathStr)
+        val modelFiles = findWhisperModelFiles(modelDir)
+
+        val isTranslate = prefs.getBoolean("translate_mode", false)
+        val taskType = if (isTranslate) "translate" else "transcribe"
+
+        val whisperConfig = OfflineWhisperModelConfig(
+            encoder = modelFiles.encoder.absolutePath,
+            decoder = modelFiles.decoder.absolutePath,
+            language = "", // auto-detect
+            task = taskType
+        )
+        val modelConfig = OfflineModelConfig(
+            whisper = whisperConfig,
+            tokens = modelFiles.tokens.absolutePath,
+            numThreads = 4,
+            debug = false,
+            provider = "cpu"
+        )
+        val recognizerConfig = OfflineRecognizerConfig(
+            modelConfig = modelConfig,
+            decodingMethod = "greedy_search"
+        )
+
+        val recognizer = OfflineRecognizer(config = recognizerConfig)
         val pcmFile = decodeToPcm(audioFile)
 
         try {
-            val result = StringBuilder()
-            pcmFile.inputStream().use { stream ->
-                val buffer = ByteArray(4096)
-                var bytesRead: Int
-                while (stream.read(buffer).also { bytesRead = it } >= 0) {
-                    ensureActive()
-                    if (recognizer.acceptWaveForm(buffer, bytesRead)) {
-                        val partial = JSONObject(recognizer.result).optString("text")
-                        if (partial.isNotBlank()) result.append(partial).append(" ")
-                    }
-                }
-                val final = JSONObject(recognizer.finalResult).optString("text")
-                if (final.isNotBlank()) result.append(final)
+            val waveData = WaveReader.readWave(pcmFile.absolutePath)
+            val stream = recognizer.createStream()
+            try {
+                stream.acceptWaveform(waveData.samples, 16000)
+                recognizer.decode(stream)
+                val result = recognizer.getResult(stream)
+                result.text.trim()
+            } finally {
+                stream.release()
             }
-            result.toString().trim()
         } finally {
-            recognizer.close()
-            model.close()
+            recognizer.release()
             if (pcmFile.absolutePath != audioFile.absolutePath) {
                 pcmFile.delete()
             }
@@ -50,16 +110,15 @@ class SpeechToTextManager(private val context: Context) {
 
     private suspend fun decodeToPcm(input: File): File = withContext(Dispatchers.IO) {
         if (input.extension.lowercase() == "wav") {
-            // Verify with MediaMetadataRetriever before trusting it
             val mmr = MediaMetadataRetriever()
             try {
                 mmr.setDataSource(input.absolutePath)
                 val sr = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_SAMPLERATE)?.toInt()
                 if (sr == 16000) {
-                    return@withContext input // Already correct — no temp file created, nothing to clean up
+                    return@withContext input
                 }
             } catch (e: Exception) {
-                // Ignore and proceed to decode if it fails to read sample rate
+                // ignore
             } finally {
                 mmr.release()
             }
@@ -75,7 +134,6 @@ class SpeechToTextManager(private val context: Context) {
             throw IOException("Failed to set data source for audio file: ${input.absolutePath}", e)
         }
 
-        // Find the first audio track
         var audioTrackIndex = -1
         var format: MediaFormat? = null
         for (i in 0 until extractor.trackCount) {
@@ -110,7 +168,6 @@ class SpeechToTextManager(private val context: Context) {
             var outputDone = false
 
             while (!outputDone) {
-                // Feed input
                 if (!inputDone) {
                     val inIndex = codec.dequeueInputBuffer(10_000L)
                     if (inIndex >= 0) {
@@ -126,10 +183,9 @@ class SpeechToTextManager(private val context: Context) {
                     }
                 }
 
-                // Drain output
                 when (val outIndex = codec.dequeueOutputBuffer(bufferInfo, 10_000L)) {
-                    MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> { /* format change — ignore for PCM */ }
-                    MediaCodec.INFO_TRY_AGAIN_LATER       -> { /* wait */ }
+                    MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {}
+                    MediaCodec.INFO_TRY_AGAIN_LATER       -> {}
                     else -> {
                         if (outIndex >= 0) {
                             val outputBuffer = codec.getOutputBuffer(outIndex)!!
@@ -147,7 +203,6 @@ class SpeechToTextManager(private val context: Context) {
 
             codec.stop()
             
-            // Resample to 16kHz mono if needed — Vosk requires exactly this
             val rawPcm = pcmBuffer.flatMap { it.toList() }.toByteArray()
             val targetPcm = if (sampleRate != 16000 || channelCount != 1) {
                 resampleToMono16k(rawPcm, sampleRate, channelCount)
@@ -155,7 +210,6 @@ class SpeechToTextManager(private val context: Context) {
                 rawPcm
             }
 
-            // Write WAV file with correct header
             writeWav(output, targetPcm, sampleRate = 16000, channels = 1)
         } finally {
             codec.release()
@@ -165,18 +219,15 @@ class SpeechToTextManager(private val context: Context) {
         output
     }
 
-    // Downsample PCM to 16kHz mono using linear interpolation
     private fun resampleToMono16k(
         input: ByteArray,
         sourceSampleRate: Int,
         sourceChannels: Int
     ): ByteArray {
-        // Convert byte array to 16-bit shorts
         val shorts = ShortArray(input.size / 2) { i ->
             ((input[i * 2 + 1].toInt() shl 8) or (input[i * 2].toInt() and 0xFF)).toShort()
         }
 
-        // Mix down to mono if stereo
         val mono = if (sourceChannels == 1) shorts else ShortArray(shorts.size / sourceChannels) { i ->
             var sum = 0L
             for (ch in 0 until sourceChannels) {
@@ -188,7 +239,6 @@ class SpeechToTextManager(private val context: Context) {
             (sum / sourceChannels).toShort()
         }
 
-        // Resample to 16kHz
         val ratio = sourceSampleRate.toDouble() / 16000.0
         val outputSize = (mono.size / ratio).toInt()
         val resampled = ShortArray(outputSize) { i ->
@@ -198,16 +248,14 @@ class SpeechToTextManager(private val context: Context) {
             ((mono[srcIdx] * (1 - frac)) + (mono[srcIdx + 1] * frac)).toInt().toShort()
         }
 
-        // Convert back to byte array (little-endian 16-bit PCM)
         return ByteArray(resampled.size * 2) { i ->
             if (i % 2 == 0) (resampled[i / 2].toInt() and 0xFF).toByte()
             else ((resampled[i / 2].toInt() shr 8) and 0xFF).toByte()
         }
     }
 
-    // Minimal WAV header writer — Vosk needs valid WAV format
     private fun writeWav(file: File, pcm: ByteArray, sampleRate: Int, channels: Int) {
-        val byteRate = sampleRate * channels * 2   // 16-bit = 2 bytes per sample
+        val byteRate = sampleRate * channels * 2
         val blockAlign = channels * 2
         val dataSize = pcm.size
         val totalSize = 36 + dataSize
@@ -223,13 +271,13 @@ class SpeechToTextManager(private val context: Context) {
             out.write(totalSize.le4())
             out.write("WAVE".toByteArray())
             out.write("fmt ".toByteArray())
-            out.write(16.le4())                          // Chunk size
-            out.write((1.toShort()).le2())               // PCM format
+            out.write(16.le4())
+            out.write((1.toShort()).le2())
             out.write(channels.toShort().le2())
             out.write(sampleRate.le4())
             out.write(byteRate.le4())
             out.write(blockAlign.toShort().le2())
-            out.write((16.toShort()).le2())              // Bits per sample
+            out.write((16.toShort()).le2())
             out.write("data".toByteArray())
             out.write(dataSize.le4())
             out.write(pcm)

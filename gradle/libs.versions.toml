@@ -13,7 +13,7 @@ junit = "4.13.2"
 kotlin = "2.3.20"
 navigationCompose = "2.8.5"
 room = "2.8.4"
-vosk = "0.3.47"
+tasksGenai = "0.10.35"
 ksp = "2.3.8"
 
 [libraries]
@@ -41,7 +41,7 @@ androidx-navigation-compose = { module = "androidx.navigation:navigation-compose
 room-runtime = { module = "androidx.room:room-runtime", version.ref = "room" }
 room-ktx = { module = "androidx.room:room-ktx", version.ref = "room" }
 room-compiler = { module = "androidx.room:room-compiler", version.ref = "room" }
-vosk-android = { module = "com.alphacephei:vosk-android", version.ref = "vosk" }
+tasks-genai = { module = "com.google.mediapipe:tasks-genai", version.ref = "tasksGenai" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "androidGradlePlugin" }

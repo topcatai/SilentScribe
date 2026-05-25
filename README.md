@@ -22,12 +22,12 @@
 
 ## ✨ Key Features
 
-- **100% Offline Speech-to-Text**: Powered by **Vosk ASR** with a bundled Indian English model (`vosk-model-small-en-in`).
+- **100% Offline Speech-to-Text**: Powered by **Sherpa-ONNX Whisper ASR** for highly accurate local transcriptions.
 - **Zero Internet Permission**: The app explicitly removes the `INTERNET` permission in its merged manifest and blocks all cleartext traffic via Network Security Configs.
 - **Native Audio Decoding Pipeline**: Extracts audio metadata, downmixes stereo to mono, and resamples any input format (MP3, M4A, WAV, etc.) to 16kHz PCM WAV using native `MediaCodec` and `MediaExtractor` APIs.
 - **Background Watcher Service**: Automatically scans for new recordings in your configured directory using Android's `FileObserver` with a 2-second debounce verification step.
 - **Intelligent Resource Optimization**: Dynamically pauses transcription work when the screen is active (unlocked) to preserve device performance, and resumes processing automatically when the screen is locked.
-- **Rule-Based Summarization**: Extracts sentiment (Positive/Negative/Neutral), bulleted call highlights, and action items locally without external API dependencies.
+- **Local LLM Summarization**: Powered by **MediaPipe Tasks GenAI**, extracting sentiment, bulleted call highlights, and action items locally via an on-device LLM model.
 - **Modern Jetpack Compose UI**: Features a sleek, custom dark/slate design system with setup wizards, full search index, and tabbed Call Details view.
 
 ---
@@ -42,8 +42,8 @@ graph TD
     D --> E{Screen State Check}
     E -- Active --> F[Pause processing to save resources]
     E -- Locked --> G[Resample & Downmix to 16kHz PCM WAV]
-    G --> H[Vosk ASR transcribes voice to text]
-    H --> I[Rule-Engine summarizes text]
+    G --> H[Whisper ASR (Sherpa-ONNX) transcribes voice to text]
+    H --> I[Local LLM (MediaPipe) summarizes text]
     I --> J[Write record to Room Database]
     J --> K[Delete temporary WAV files in try-finally]
 ```
@@ -70,14 +70,15 @@ SilentScribe automatically maps incoming recording formats to parse contacts, nu
 *   **UI Framework**: Jetpack Compose with Material 3 styling.
 *   **Navigation**: Type-safe Jetpack Navigation using Kotlin Serialization.
 *   **Database**: Room DB with KSP compiler for fast query responses.
-*   **Speech Recognition**: Vosk Android SDK (`com.alphacephei:vosk-android`).
+*   **Speech Recognition**: Sherpa-ONNX (Whisper ASR).
+*   **Local LLM**: MediaPipe Tasks GenAI SDK.
 *   **Target SDK**: Compile & Target SDK `35` / `36` (Android 15+).
 
 ### Package Layout
 ```
 com.example.mobileaudiowhatsapp/
 ├── data/                  # Room Entity, DAO, and Repository
-├── ml/                    # SpeechToTextManager, SummarisationManager, VoskModelManager
+├── ml/                    # SpeechToTextManager (ASR) and SummarisationManager (LLM)
 ├── receiver/              # BootCompletedReceiver (startup persistence)
 ├── service/               # CallFolderWatcherService (background watcher)
 ├── theme/                 # Slate-Dark palette colors, typography, shapes

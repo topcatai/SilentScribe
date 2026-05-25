@@ -14,11 +14,20 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+        debug {
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
@@ -89,6 +98,7 @@ dependencies {
   implementation(libs.room.ktx)
   ksp(libs.room.compiler)
 
-  // Vosk Offline ASR
-  implementation(libs.vosk.android)
+  // Sherpa-ONNX Offline ASR
+  implementation(files("libs/sherpa-onnx-1.13.2.aar"))
+  implementation(libs.tasks.genai)
 }

@@ -59,8 +59,6 @@ class CallFolderWatcherService : Service() {
         val dir = prefs.getString("watch_dir", null)
 
         if (dir.isNullOrBlank()) {
-            // Service started but no watch directory configured yet.
-            // Run in foreground with basic message to keep it alive.
             startForegroundServiceCompat("No watch folder configured")
             return START_STICKY
         }
@@ -71,11 +69,10 @@ class CallFolderWatcherService : Service() {
         startFileObserver(dir)
         registerScreenReceiver()
 
-        // Check current screen state on start
         val pm = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
         isScreenOn = pm.isInteractive
         if (!isScreenOn) {
-            triggerOlderFilesProcessing()
+            triggerPendingNewProcessing()
         }
 
         return START_STICKY
@@ -99,6 +96,7 @@ class CallFolderWatcherService : Service() {
         fileObserver?.stopWatching()
         runCatching { unregisterReceiver(screenReceiver) }
         serviceScope.cancel()
+        SummarisationManager.release()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -122,9 +120,9 @@ class CallFolderWatcherService : Service() {
                     phoneNumber = meta.phoneNumber,
                     displayName = meta.displayName,
                     timestampMs = meta.timestampMs,
-                    durationSeconds = 0, // Resolved when processed
-                    status = "PENDING",
-                    isNew = 0 // Pre-existing calls are marked isNew = 0
+                    durationSeconds = 0,
+                    status = "SKIPPED_HISTORICAL",
+                    isNew = 0 // Pre-existing calls are marked as skipped historical
                 )
             )
         }
@@ -166,7 +164,6 @@ class CallFolderWatcherService : Service() {
         val meta = FilenameParser.parse(file.name) ?: return
         val dao = AppDatabase.getInstance(this).callLogDao()
 
-        // Insert as PENDING, marked as isNew = 1 since it arrived during runtime
         val rowId = dao.insert(
             CallLog(
                 filename = file.name,
@@ -178,7 +175,7 @@ class CallFolderWatcherService : Service() {
                 isNew = 1
             )
         )
-        if (rowId == -1L) return // Duplicate file
+        if (rowId == -1L) return
 
         if (!awaitFileStable(file)) {
             Log.e(TAG, "File was not stable: ${file.name}")
@@ -195,7 +192,6 @@ class CallFolderWatcherService : Service() {
 
         dao.update(finalLog.copy(durationSeconds = duration))
         
-        // Process new files immediately (regardless of screen state)
         transcribeAndSummarise(file, rowId.toInt())
     }
 
@@ -224,7 +220,7 @@ class CallFolderWatcherService : Service() {
             when (intent.action) {
                 Intent.ACTION_SCREEN_OFF -> {
                     isScreenOn = false
-                    triggerOlderFilesProcessing()
+                    triggerPendingNewProcessing()
                 }
                 Intent.ACTION_SCREEN_ON -> {
                     isScreenOn = true
@@ -243,19 +239,18 @@ class CallFolderWatcherService : Service() {
         registerReceiver(screenReceiver, filter)
     }
 
-    private fun triggerOlderFilesProcessing() {
+    private fun triggerPendingNewProcessing() {
         olderFileJob?.cancel()
         olderFileJob = serviceScope.launch {
-            processNextOlderFile()
+            processNextPendingNewFile()
         }
     }
 
-    private suspend fun processNextOlderFile() {
-        // Double-check screen state before picking up a file
+    private suspend fun processNextPendingNewFile() {
         if (isScreenOn) return
 
         val dao = AppDatabase.getInstance(this).callLogDao()
-        val next = dao.nextPendingOlder() ?: run {
+        val next = dao.nextPendingNew() ?: run {
             updateNotification("All calls processed")
             return
         }
@@ -265,20 +260,20 @@ class CallFolderWatcherService : Service() {
         val file = File(dir, next.filename)
 
         if (!file.exists()) {
-            dao.update(next.copy(status = "FAILED"))
-            processNextOlderFile()
+            dao.update(next.copy(status = "FAILED", failureReason = "Audio file does not exist on disk."))
+            processNextPendingNewFile()
             return
         }
 
         if (!awaitFileStable(file)) {
-            processNextOlderFile()
+            processNextPendingNewFile()
             return
         }
 
         val duration = file.audioDurationSeconds()
         if (duration < 5) {
             dao.update(next.copy(status = "SKIPPED_TOO_SHORT", durationSeconds = duration))
-            processNextOlderFile() // Recurse to next
+            processNextPendingNewFile()
             return
         }
 
@@ -286,13 +281,12 @@ class CallFolderWatcherService : Service() {
         
         try {
             transcribeAndSummarise(file, next.id)
-            // Proceed recursively on success
-            processNextOlderFile()
+            processNextPendingNewFile()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "Error in processNextOlderFile loop", e)
-            processNextOlderFile()
+            Log.e(TAG, "Error in processNextPendingNewFile loop", e)
+            processNextPendingNewFile()
         }
     }
 
@@ -313,25 +307,31 @@ class CallFolderWatcherService : Service() {
                 val summary = SummarisationManager.summarise(
                     transcript,
                     log.phoneNumber,
-                    log.durationSeconds
+                    log.durationSeconds,
+                    this@CallFolderWatcherService
                 )
 
                 dao.update(
                     log.copy(
                         exactTranscript = transcript,
                         callerSummary = summary,
-                        status = "COMPLETED"
+                        status = "COMPLETED",
+                        failureReason = null
                     )
                 )
                 updateNotification("Transcription completed for ${log.phoneNumber}")
             } catch (e: CancellationException) {
-                // Reset to PENDING so it can be retried next time the screen turns off
                 dao.update(log.copy(status = "PENDING"))
                 updateNotification("Transcription paused — resumes when screen locks")
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "ASR failed for: ${file.name}", e)
-                dao.update(log.copy(status = "FAILED"))
+                dao.update(
+                    log.copy(
+                        status = "FAILED",
+                        failureReason = e.stackTraceToString().take(1000)
+                    )
+                )
                 updateNotification("ASR failed for ${log.phoneNumber}")
             }
         }

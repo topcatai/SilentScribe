@@ -24,9 +24,9 @@ interface CallLogDao {
     @Query("SELECT * FROM call_logs WHERE phone_number LIKE '%' || :q || '%' ORDER BY timestamp_ms DESC")
     fun search(q: String): Flow<List<CallLog>>
 
-    // Next pending pre-existing file for idle (screen-off) processing
-    @Query("SELECT * FROM call_logs WHERE status = 'PENDING' AND is_new = 0 ORDER BY timestamp_ms ASC LIMIT 1")
-    suspend fun nextPendingOlder(): CallLog?
+    // Next pending new file for processing (screen-off or background queue)
+    @Query("SELECT * FROM call_logs WHERE status = 'PENDING' AND is_new = 1 ORDER BY timestamp_ms ASC LIMIT 1")
+    suspend fun nextPendingNew(): CallLog?
 
     // Single record for CallDetailsScreen
     @Query("SELECT * FROM call_logs WHERE id = :id")
@@ -41,4 +41,13 @@ interface CallLogDao {
 
     @Query("SELECT COUNT(*) FROM call_logs WHERE status = 'SKIPPED_TOO_SHORT'")
     fun observeSkippedCount(): Flow<Int>
+
+    @Query("SELECT * FROM call_logs WHERE status = 'FAILED' ORDER BY timestamp_ms DESC")
+    fun observeFailed(): Flow<List<CallLog>>
+
+    @Query("SELECT COUNT(*) FROM call_logs WHERE status = 'FAILED'")
+    fun observeFailedCount(): Flow<Int>
+
+    @Query("SELECT COUNT(*) FROM call_logs WHERE status = 'SKIPPED_HISTORICAL'")
+    fun observeHistoricalCount(): Flow<Int>
 }

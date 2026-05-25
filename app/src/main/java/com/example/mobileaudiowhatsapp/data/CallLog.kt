@@ -18,7 +18,8 @@ data class CallLog(
     @ColumnInfo(name = "duration_seconds") val durationSeconds: Int,
     @ColumnInfo(name = "exact_transcript") val exactTranscript: String? = null, // Plaintext. Null until status = COMPLETED
     @ColumnInfo(name = "caller_summary") val callerSummary: String? = null,   // Plaintext. Null until status = COMPLETED
-    val status: String,           // PENDING | PROCESSING | COMPLETED | SKIPPED_TOO_SHORT
+    val status: String,           // PENDING | PROCESSING | COMPLETED | SKIPPED_TOO_SHORT | SKIPPED_HISTORICAL | FAILED
     @ColumnInfo(name = "is_new") val isNew: Int,               // 1 = arrived after first launch; 0 = pre-existing
-    @ColumnInfo(name = "sync_status") val syncStatus: Int = 0       // Reserved for Phase 2 CRM
+    @ColumnInfo(name = "sync_status") val syncStatus: Int = 0,      // Reserved for Phase 2 CRM
+    @ColumnInfo(name = "failure_reason") val failureReason: String? = null
 )
